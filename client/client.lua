@@ -2,6 +2,10 @@ local nuiReady = false
 local nuiFocused = false
 local currentVehicle = 0
 local windowStates = {}
+local engineForcedOff = {}
+local savedLightModes = {}
+local selectedLightModes = {}
+local blockPauseUntil = 0
 
 local doorDefinitions = {
     { index = 0, label = 'Przód L', icon = 'door' },
@@ -18,6 +22,13 @@ local windowDefinitions = {
     { index = 2, label = 'Tył L' },
     { index = 3, label = 'Tył P' },
 }
+
+
+
+CarControl = {
+    shown = false
+}
+
 
 local function sendUpdate(data)
     if not nuiReady then
@@ -83,6 +94,22 @@ local function getLightMode(vehicle)
     return 0
 end
 
+local function setLightMode(vehicle, mode)
+    selectedLightModes[vehicle] = mode
+
+    if mode == 0 then
+        SetVehicleFullbeam(vehicle, false)
+        SetVehicleLights(vehicle, 1)
+        SetVehicleBrakeLights(vehicle, false)
+    elseif mode == 1 then
+        SetVehicleFullbeam(vehicle, false)
+        SetVehicleLights(vehicle, 2)
+    else
+        SetVehicleLights(vehicle, 2)
+        SetVehicleFullbeam(vehicle, true)
+    end
+end
+
 local function getDoorStates(vehicle)
     local doors = {
         {
@@ -90,15 +117,23 @@ local function getDoorStates(vehicle)
             label = 'Wszystkie',
             icon = 'car',
             open = false,
+            damaged = false,
             available = true
         }
     }
 
     local anyDoorOpen = false
+    local anyDoorAvailable = false
 
     for _, definition in ipairs(doorDefinitions) do
-        local available = GetIsDoorValid(vehicle, definition.index)
+        local valid = GetIsDoorValid(vehicle, definition.index)
+        local damaged = valid and IsVehicleDoorDamaged(vehicle, definition.index)
+        local available = valid and not damaged
         local isOpen = available and GetVehicleDoorAngleRatio(vehicle, definition.index) > 0.05
+
+        if available then
+            anyDoorAvailable = true
+        end
 
         if isOpen then
             anyDoorOpen = true
@@ -109,11 +144,13 @@ local function getDoorStates(vehicle)
             label = definition.label,
             icon = definition.icon,
             open = isOpen,
+            damaged = damaged,
             available = available
         }
     end
 
     doors[1].open = anyDoorOpen
+    doors[1].available = anyDoorAvailable
     return doors
 end
 
@@ -184,9 +221,9 @@ local function getSeatStates(vehicle)
     return seats
 end
 
-local function isNeonAvailable(vehicle)
-    -- GTA safely ignores neon toggles on models that do not support them.
-    return DoesEntityExist(vehicle)
+local function hasNeonKit(vehicle)
+    -- TODO: Replace with the mechanic resource check.
+    return false
 end
 
 local function isNeonOn(vehicle)
@@ -200,14 +237,18 @@ local function isNeonOn(vehicle)
 end
 
 local function buildVehicleState(vehicle)
+    local neonAvailable = hasNeonKit(vehicle)
+
     return {
-        visible = true,
+        visible = CarControl.shown,
         focused = nuiFocused,
         vehicleName = getVehicleName(vehicle),
         engineOn = GetIsVehicleEngineRunning(vehicle),
-        neonOn = isNeonOn(vehicle),
-        neonAvailable = isNeonAvailable(vehicle),
-        lightsMode = getLightMode(vehicle),
+        neonOn = neonAvailable and isNeonOn(vehicle),
+        neonAvailable = neonAvailable,
+        lightsMode = engineForcedOff[vehicle] and 0
+            or selectedLightModes[vehicle]
+            or getLightMode(vehicle),
         doors = getDoorStates(vehicle),
         windows = getWindowStates(vehicle),
         seats = getSeatStates(vehicle)
@@ -219,6 +260,7 @@ local function refreshState()
 
     if vehicle == 0 then
         currentVehicle = 0
+        CarControl.shown = false
 
         if nuiFocused then
             nuiFocused = false
@@ -250,6 +292,30 @@ local function withVehicle(callback)
     return true
 end
 
+local function notify(message, type)
+    ESX.ShowNotification(message, type, 5000, 'Pojazd')
+end
+
+local function toggleVehicleEngine(vehicle)
+    local nextState = not GetIsVehicleEngineRunning(vehicle)
+
+    engineForcedOff[vehicle] = not nextState
+
+    if not nextState then
+        savedLightModes[vehicle] = selectedLightModes[vehicle] or getLightMode(vehicle)
+        SetVehicleEngineOn(vehicle, false, true, true)
+        setLightMode(vehicle, 0)
+    else
+        local previousLightMode = savedLightModes[vehicle] or 0
+
+        SetVehicleEngineOn(vehicle, true, true, false)
+        setLightMode(vehicle, previousLightMode)
+        savedLightModes[vehicle] = nil
+    end
+
+    return nextState
+end
+
 RegisterNUICallback('ready', function(_, cb)
     nuiReady = true
     refreshState()
@@ -258,16 +324,20 @@ end)
 
 RegisterNUICallback('close', function(_, cb)
     nuiFocused = false
+    CarControl.shown = false
+    blockPauseUntil = GetGameTimer() + 500
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
-    sendUpdate({ focused = false })
+    sendUpdate({
+        visible = false,
+        focused = false
+    })
     cb({ ok = true })
 end)
 
 RegisterNUICallback('toggleEngine', function(_, cb)
     local success = withVehicle(function(vehicle)
-        local nextState = not GetIsVehicleEngineRunning(vehicle)
-        SetVehicleEngineOn(vehicle, nextState, false, true)
+        toggleVehicleEngine(vehicle)
     end)
 
     cb({ ok = success })
@@ -282,6 +352,7 @@ RegisterNUICallback('toggleDoor', function(data, cb)
 
             for _, definition in ipairs(doorDefinitions) do
                 if GetIsDoorValid(vehicle, definition.index)
+                    and not IsVehicleDoorDamaged(vehicle, definition.index)
                     and GetVehicleDoorAngleRatio(vehicle, definition.index) > 0.05 then
                     anyDoorOpen = true
                     break
@@ -289,7 +360,8 @@ RegisterNUICallback('toggleDoor', function(data, cb)
             end
 
             for _, definition in ipairs(doorDefinitions) do
-                if GetIsDoorValid(vehicle, definition.index) then
+                if GetIsDoorValid(vehicle, definition.index)
+                    and not IsVehicleDoorDamaged(vehicle, definition.index) then
                     if not anyDoorOpen then
                         SetVehicleDoorOpen(vehicle, definition.index, false, false)
                     else
@@ -297,7 +369,9 @@ RegisterNUICallback('toggleDoor', function(data, cb)
                     end
                 end
             end
-        elseif index and GetIsDoorValid(vehicle, index) then
+        elseif index
+            and GetIsDoorValid(vehicle, index)
+            and not IsVehicleDoorDamaged(vehicle, index) then
             if GetVehicleDoorAngleRatio(vehicle, index) > 0.05 then
                 SetVehicleDoorShut(vehicle, index, false)
             else
@@ -355,31 +429,30 @@ RegisterNUICallback('toggleWindow', function(data, cb)
 end)
 
 RegisterNUICallback('toggleNeon', function(_, cb)
+    local toggled = false
     local success = withVehicle(function(vehicle)
+        if not hasNeonKit(vehicle) then
+            return
+        end
+
         local enabled = not isNeonOn(vehicle)
 
         for index = 0, 3 do
             SetVehicleNeonLightEnabled(vehicle, index, enabled)
         end
+
+        toggled = true
     end)
 
-    cb({ ok = success })
+    cb({ ok = success and toggled })
 end)
 
 RegisterNUICallback('cycleLights', function(_, cb)
     local success = withVehicle(function(vehicle)
-        local nextMode = (getLightMode(vehicle) + 1) % 3
+        local currentMode = selectedLightModes[vehicle] or getLightMode(vehicle)
+        local nextMode = (currentMode + 1) % 3
 
-        if nextMode == 0 then
-            SetVehicleFullbeam(vehicle, false)
-            SetVehicleLights(vehicle, 1)
-        elseif nextMode == 1 then
-            SetVehicleFullbeam(vehicle, false)
-            SetVehicleLights(vehicle, 2)
-        else
-            SetVehicleLights(vehicle, 2)
-            SetVehicleFullbeam(vehicle, true)
-        end
+        setLightMode(vehicle, nextMode)
     end)
 
     cb({ ok = success })
@@ -404,16 +477,44 @@ RegisterCommand('carcontrol', function()
         return
     end
 
-    nuiFocused = not nuiFocused
+    CarControl.shown = not CarControl.shown
+    nuiFocused = CarControl.shown
     SetNuiFocus(nuiFocused, nuiFocused)
     SetNuiFocusKeepInput(nuiFocused)
     sendUpdate({
-        visible = true,
+        visible = CarControl.shown,
         focused = nuiFocused
     })
+
+    CreateThread(function()
+        while nuiFocused do
+            DisableControlAction(0, 1, true)
+            DisableControlAction(0, 2, true)
+            DisableControlAction(0, 24, true)
+            DisableControlAction(0, 25, true)
+            DisableControlAction(0, 75, true)
+            DisableControlAction(0, 200, true)
+            DisableControlAction(0, 177, true)
+            Wait(0)
+        end
+    end)
+
 end, false)
 
 RegisterKeyMapping('carcontrol', 'Sterowanie pojazdem', 'keyboard', 'F7')
+
+RegisterCommand('carcontrol_engine', function()
+    local engineOn
+    local success = withVehicle(function(vehicle)
+        engineOn = toggleVehicleEngine(vehicle)
+    end)
+
+    if success then
+        notify(engineOn and 'Silnik włączony' or 'Silnik wyłączony', engineOn and 'success' or 'error')
+    end
+end, false)
+
+RegisterKeyMapping('carcontrol_engine', 'Włącz/wyłącz silnik pojazdu', 'keyboard', 'Y')
 
 CreateThread(function()
     while true do
@@ -429,18 +530,56 @@ end)
 
 CreateThread(function()
     while true do
-        if nuiFocused then
-            DisableControlAction(0, 1, true)
-            DisableControlAction(0, 2, true)
-            DisableControlAction(0, 24, true)
-            DisableControlAction(0, 25, true)
-            DisableControlAction(0, 75, true)
+        local vehicle = getPlayerVehicle()
+
+        if vehicle ~= 0 and engineForcedOff[vehicle] then
+            SetVehicleEngineOn(vehicle, false, true, true)
+            SetVehicleFullbeam(vehicle, false)
+            SetVehicleLights(vehicle, 1)
+            SetVehicleBrakeLights(vehicle, false)
             Wait(0)
         else
-            Wait(300)
+            Wait(250)
         end
     end
 end)
+
+CreateThread(function()
+    while true do
+        local vehicle = getPlayerVehicle()
+
+        if vehicle ~= 0 then
+            DisableControlAction(0, 74, true)
+
+            if IsDisabledControlJustPressed(0, 74)
+                and not engineForcedOff[vehicle]
+                and requestControl(vehicle) then
+                local currentMode = selectedLightModes[vehicle] or getLightMode(vehicle)
+                setLightMode(vehicle, (currentMode + 1) % 3)
+                refreshState()
+            end
+
+            Wait(0)
+        else
+            Wait(250)
+        end
+    end
+end)
+
+CreateThread(function()
+    while true do
+        if nuiFocused or GetGameTimer() < blockPauseUntil then
+            DisableControlAction(0, 199, true)
+            DisableControlAction(0, 200, true)
+            DisableControlAction(0, 177, true)
+            Wait(0)
+        else
+            Wait(250)
+        end
+    end
+end)
+
+
 
 AddEventHandler('onResourceStop', function(resourceName)
     if resourceName ~= GetCurrentResourceName() then

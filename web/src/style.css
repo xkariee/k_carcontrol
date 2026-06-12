@@ -6,6 +6,7 @@
   font-synthesis: none;
   --accent: #34f6d2;
   --accent-rgb: 52, 246, 210;
+  --menu-scale: .86;
 }
 
 * {
@@ -42,16 +43,20 @@ button:focus-visible {
   pointer-events: none;
 }
 
+.menu-positioner {
+  position: fixed;
+  z-index: 2;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
 .control-bar,
 .subpanel {
-  position: absolute;
-  left: 50%;
-  pointer-events: auto;
-  transform: translateX(-50%);
+  transform-origin: bottom center;
 }
 
 .control-bar {
-  bottom: 2.1vh;
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: .45vh;
@@ -66,6 +71,7 @@ button:focus-visible {
     inset 0 .1vh rgba(255, 255, 255, .07),
     inset 0 0 1.4vh rgba(0, 0, 0, .16),
     0 .55vh 2.1vh rgba(0, 0, 0, .26);
+  transform: scale(var(--menu-scale));
 }
 
 .control-bar::before {
@@ -77,6 +83,60 @@ button:focus-visible {
   height: .13vh;
   background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), .65), transparent);
   box-shadow: 0 0 .7vh rgba(var(--accent-rgb), .35);
+}
+
+.drag-handle {
+  width: 3.6vh;
+  min-width: 3.6vh;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: rgba(255, 255, 255, .55);
+  touch-action: none;
+  background: rgba(12, 14, 15, .28);
+  border: .1vh solid rgba(255, 255, 255, .12);
+  border-radius: .55vh;
+  cursor: grab;
+}
+
+.drag-handle:hover {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), .32);
+}
+
+.drag-handle:active,
+.menu-positioner.is-dragging .drag-handle {
+  color: var(--accent);
+  cursor: grabbing;
+  box-shadow: inset 0 0 .8vh rgba(var(--accent-rgb), .08);
+}
+
+.drag-handle svg {
+  width: 1.55vh;
+  height: 1.55vh;
+  pointer-events: none;
+}
+
+.snap-guide {
+  position: fixed;
+  z-index: 1;
+  pointer-events: none;
+  background: rgba(var(--accent-rgb), .5);
+  box-shadow: 0 0 .7vh rgba(var(--accent-rgb), .42);
+}
+
+.snap-guide--vertical {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: .1vh;
+}
+
+.snap-guide--horizontal {
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: .1vh;
 }
 
 .vehicle-chip {
@@ -288,7 +348,9 @@ button:focus-visible {
 }
 
 .subpanel {
-  bottom: 10.9vh;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + .8vh);
   width: min(73vh, 94vw);
   padding: .8vh;
   background: linear-gradient(180deg, rgba(68, 70, 72, .7), rgba(34, 36, 38, .74));
@@ -297,6 +359,7 @@ button:focus-visible {
   box-shadow:
     inset 0 0 1.4vh rgba(0, 0, 0, .18),
     0 .5vh 2vh rgba(0, 0, 0, .38);
+  transform: translateX(-50%) scale(var(--menu-scale));
 }
 
 .subpanel::after {
@@ -310,6 +373,21 @@ button:focus-visible {
   border-right: .1vh solid rgba(255, 255, 255, .1);
   border-bottom: .1vh solid rgba(255, 255, 255, .1);
   transform: translateX(-50%) rotate(45deg);
+}
+
+.menu-positioner.panel-below .subpanel {
+  top: calc(100% + .8vh);
+  bottom: auto;
+  transform-origin: top center;
+}
+
+.menu-positioner.panel-below .subpanel::after {
+  top: -.43vh;
+  bottom: auto;
+  border-top: .1vh solid rgba(255, 255, 255, .1);
+  border-right: 0;
+  border-bottom: 0;
+  border-left: .1vh solid rgba(255, 255, 255, .1);
 }
 
 .subpanel__header {
@@ -466,7 +544,7 @@ button:focus-visible {
 .menu-enter-from .control-bar,
 .menu-leave-to .control-bar {
   opacity: 0;
-  transform: translate(-50%, 2.4vh);
+  transform: translateY(2.4vh) scale(var(--menu-scale));
 }
 
 .subpanel-enter-active,
@@ -477,7 +555,12 @@ button:focus-visible {
 .subpanel-enter-from,
 .subpanel-leave-to {
   opacity: 0;
-  transform: translate(-50%, 1.1vh) scale(.98);
+  transform: translate(-50%, 1.1vh) scale(.84);
+}
+
+.panel-below .subpanel-enter-from,
+.panel-below .subpanel-leave-to {
+  transform: translate(-50%, -1.1vh) scale(.84);
 }
 
 @media (max-width: 1280px) {

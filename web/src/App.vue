@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, ref } from 'vue'
 
 type IconName =
   | 'engine'
@@ -13,12 +13,14 @@ type IconName =
   | 'car'
   | 'close'
   | 'power'
+  | 'move'
 
 type DoorState = {
   index: number
   label: string
   icon: IconName
   open: boolean
+  damaged: boolean
   available: boolean
 }
 
@@ -101,6 +103,10 @@ const iconPaths: Record<IconName, string[]> = {
     'M12 2v10',
     'M6.3 5.7a8 8 0 1 0 11.4 0',
   ],
+  move: [
+    'M12 2v20M2 12h20',
+    'm8 6 4-4 4 4M8 18l4 4 4-4M6 8l-4 4 4 4M18 8l4 4-4 4',
+  ],
 }
 
 const Icon = (props: { name: IconName }) => h(
@@ -118,23 +124,32 @@ const Icon = (props: { name: IconName }) => h(
 )
 
 const browserPreview = typeof window !== 'undefined' && !(window as any).invokeNative
+const positionStorageKey = 'k_carcontrol:position'
+const snapDistance = 28
 const panel = ref<'doors' | 'windows' | 'seats' | null>(null)
+const controlBar = ref<HTMLElement | null>(null)
+const position = ref({ x: window.innerWidth / 2, y: window.innerHeight - 64 })
+const dragging = ref(false)
+const snappedX = ref(false)
+const snappedY = ref(false)
+let dragPointerId: number | null = null
+let dragOffset = { x: 0, y: 0 }
 const state = ref<VehicleState>({
   visible: browserPreview,
   focused: browserPreview,
   vehicleName: 'Sultan RS',
   engineOn: true,
-  neonOn: true,
-  neonAvailable: true,
+  neonOn: false,
+  neonAvailable: false,
   lightsMode: 1,
   doors: [
-    { index: -1, label: 'Wszystkie', icon: 'car', open: false, available: true },
-    { index: 0, label: 'Przód L', icon: 'door', open: false, available: true },
-    { index: 1, label: 'Przód P', icon: 'door', open: false, available: true },
-    { index: 2, label: 'Tył L', icon: 'door', open: false, available: true },
-    { index: 3, label: 'Tył P', icon: 'door', open: false, available: true },
-    { index: 4, label: 'Maska', icon: 'hood', open: true, available: true },
-    { index: 5, label: 'Bagażnik', icon: 'trunk', open: false, available: true },
+    { index: -1, label: 'Wszystkie', icon: 'car', open: false, damaged: false, available: true },
+    { index: 0, label: 'Przód L', icon: 'door', open: false, damaged: false, available: true },
+    { index: 1, label: 'Przód P', icon: 'door', open: false, damaged: false, available: true },
+    { index: 2, label: 'Tył L', icon: 'door', open: false, damaged: false, available: true },
+    { index: 3, label: 'Tył P', icon: 'door', open: false, damaged: false, available: true },
+    { index: 4, label: 'Maska', icon: 'hood', open: true, damaged: false, available: true },
+    { index: 5, label: 'Bagażnik', icon: 'trunk', open: false, damaged: false, available: true },
   ],
   windows: [
     { index: -1, label: 'Wszystkie', down: false, available: true },
@@ -154,6 +169,90 @@ const state = ref<VehicleState>({
 const anyDoorOpen = computed(() => state.value.doors.some((door) => door.index >= 0 && door.open))
 const anyWindowDown = computed(() => state.value.windows.some((window) => window.index >= 0 && window.down))
 const lightsLabel = computed(() => ['Wyłączone', 'Mijania', 'Długie'][state.value.lightsMode])
+const positionStyle = computed(() => ({
+  left: `${position.value.x}px`,
+  top: `${position.value.y}px`,
+}))
+const openPanelBelow = computed(() => {
+  const requiredSpace = window.innerHeight * 0.14
+  return position.value.y < requiredSpace
+})
+
+function clampPosition(x: number, y: number) {
+  const rect = controlBar.value?.getBoundingClientRect()
+  const halfWidth = (rect?.width ?? 600) / 2
+  const halfHeight = (rect?.height ?? 70) / 2
+
+  return {
+    x: Math.min(Math.max(x, halfWidth + 8), window.innerWidth - halfWidth - 8),
+    y: Math.min(Math.max(y, halfHeight + 8), window.innerHeight - halfHeight - 8),
+  }
+}
+
+function savePosition() {
+  localStorage.setItem(positionStorageKey, JSON.stringify({
+    x: position.value.x / window.innerWidth,
+    y: position.value.y / window.innerHeight,
+  }))
+}
+
+function loadPosition() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(positionStorageKey) ?? '')
+    if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      position.value = clampPosition(saved.x * window.innerWidth, saved.y * window.innerHeight)
+      return
+    }
+  } catch {
+    // Use the default position.
+  }
+
+  position.value = clampPosition(window.innerWidth / 2, window.innerHeight - 64)
+}
+
+function handleDragStart(event: PointerEvent) {
+  if (event.button !== 0) return
+
+  dragging.value = true
+  dragPointerId = event.pointerId
+  dragOffset = {
+    x: event.clientX - position.value.x,
+    y: event.clientY - position.value.y,
+  }
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  event.preventDefault()
+}
+
+function handleDragMove(event: PointerEvent) {
+  if (!dragging.value || event.pointerId !== dragPointerId) return
+
+  let x = event.clientX - dragOffset.x
+  let y = event.clientY - dragOffset.y
+  const centerX = window.innerWidth / 2
+  const centerY = window.innerHeight / 2
+
+  snappedX.value = Math.abs(x - centerX) <= snapDistance
+  snappedY.value = Math.abs(y - centerY) <= snapDistance
+  if (snappedX.value) x = centerX
+  if (snappedY.value) y = centerY
+
+  position.value = clampPosition(x, y)
+}
+
+function handleDragEnd(event: PointerEvent) {
+  if (event.pointerId !== dragPointerId) return
+
+  dragging.value = false
+  dragPointerId = null
+  snappedX.value = false
+  snappedY.value = false
+  savePosition()
+}
+
+function handleResize() {
+  position.value = clampPosition(position.value.x, position.value.y)
+  savePosition()
+}
 
 async function nui(event: string, data: Record<string, unknown> = {}) {
   if (browserPreview) {
@@ -215,6 +314,8 @@ function handleMessage(event: MessageEvent) {
 
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
     panel.value = null
     void nui('close')
   }
@@ -223,19 +324,30 @@ function handleKeydown(event: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener('message', handleMessage)
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', handleResize)
+  void nextTick(loadPosition)
   void nui('ready')
 })
 
 onUnmounted(() => {
   window.removeEventListener('message', handleMessage)
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', handleResize)
 })
 </script>
 
 <template>
   <Transition name="menu">
     <main v-if="state.visible" class="car-control" :class="{ 'is-focused': state.focused }">
-      <Transition name="subpanel" mode="out-in">
+      <div v-if="dragging && snappedX" class="snap-guide snap-guide--vertical"></div>
+      <div v-if="dragging && snappedY" class="snap-guide snap-guide--horizontal"></div>
+
+      <div
+        class="menu-positioner"
+        :class="{ 'is-dragging': dragging, 'panel-below': openPanelBelow }"
+        :style="positionStyle"
+      >
+        <Transition name="subpanel" mode="out-in">
         <section v-if="panel === 'doors'" key="doors" class="subpanel">
           <header class="subpanel__header">
             <div>
@@ -258,7 +370,7 @@ onUnmounted(() => {
             >
               <Icon :name="door.icon" />
               <span>{{ door.label }}</span>
-              <i>{{ (door.index === -1 ? anyDoorOpen : door.open) ? 'Otwarte' : 'Zamknięte' }}</i>
+              <i>{{ door.damaged ? 'Wyrwane' : (door.index === -1 ? anyDoorOpen : door.open) ? 'Otwarte' : 'Zamknięte' }}</i>
             </button>
           </div>
         </section>
@@ -316,9 +428,20 @@ onUnmounted(() => {
             </button>
           </div>
         </section>
-      </Transition>
+        </Transition>
 
-      <section class="control-bar">
+        <section ref="controlBar" class="control-bar">
+          <button
+            class="drag-handle"
+            aria-label="Przenieś menu"
+            title="Przeciągnij, aby przenieść menu"
+            @pointerdown="handleDragStart"
+            @pointermove="handleDragMove"
+            @pointerup="handleDragEnd"
+            @pointercancel="handleDragEnd"
+          >
+            <Icon name="move" />
+          </button>
         <div class="vehicle-chip">
           <span class="vehicle-chip__icon"><Icon name="car" /></span>
           <span class="vehicle-chip__copy">
@@ -409,7 +532,8 @@ onUnmounted(() => {
           <kbd>F7</kbd>
           <span>{{ state.focused ? 'ESC zamyka' : 'Sterowanie' }}</span>
         </div>
-      </section>
+        </section>
+      </div>
     </main>
   </Transition>
 </template>
